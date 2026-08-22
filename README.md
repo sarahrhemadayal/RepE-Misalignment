@@ -1,4 +1,4 @@
-### Detecting Agentic Misalignment via Representation Engineering
+# Detecting Agentic Misalignment via Representation Engineering
 
 ## Structure
 
