@@ -117,7 +117,13 @@ class CircuitBreaker:
         raw = self.score_text(full, skip=n_prompt)
         sm = self.smooth(raw, self.window)
 
-        halt_idx = next((i for i, s in enumerate(sm) if s > self.tau), None)
+        # Don't evaluate the halt rule until the rolling window is actually full --
+        # before that, `sm[i]` is an average over fewer than `window` raw scores (sm[0]
+        # is literally one unsmoothed token), exactly the single-token-spike noise the
+        # smoothing exists to filter out. Skipping the first `window - 1` positions was
+        # missing before and caused spurious near-instant halts on both aligned and
+        # misaligned runs alike (2026-08-27 fix).
+        halt_idx = next((i for i, s in enumerate(sm) if i >= self.window - 1 and s > self.tau), None)
 
         toks = self.model.to_str_tokens(full)[n_prompt:]
         if halt_idx is not None:
