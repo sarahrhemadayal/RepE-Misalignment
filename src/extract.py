@@ -2,15 +2,29 @@
 extract.py — Residual-stream extraction for contrastive pairs.
 
 For each pair, runs both the aligned and misaligned prompt through the model and
-caches `resid_post` at every layer, keeping the FINAL-token activation.
+caches `resid_post` at every layer, keeping a WINDOW-MEAN activation: the mean
+of the last `window` token positions of the reasoning trace (default 8).
 
 Output: data/acts.pt containing two tensors of shape [n_pairs, n_layers, d_model]
 plus the config that produced them.
 
-Why the final token: it is the position where the model has attended over the
-entire scenario and reasoning trace, so its residual stream carries the most
-complete representation of "the state the model is in having reasoned this way".
-Earlier positions have only seen a prefix.
+Why window-mean and not the single final token (2026-08-27 fix)
+------------------------------------------------------------------
+The original version kept only the raw final-token activation. That token is
+whatever word the free-form reasoning happened to end on ("...decision." vs.
+"...now."), which differs systematically between the aligned and misaligned
+sides just from author style — a lexical/token-identity shortcut, not a
+"the model has reasoned about deception" signal. It showed up as a bug: even
+layer 0 (one block deep) hit ~perfect held-out AUROC, which a single
+transformer block cannot do by actually representing a strategic concept — it
+can only do it by reading off token identity. Averaging over the last `window`
+positions removes the single-token idiosyncrasy while still living entirely
+inside the reasoning span (mean reasoning length ~64 words, so window=8 is
+comfortably inside it for all 30 pairs) and keeps the extraction position
+representationally consistent with deployment: monitor.py's CircuitBreaker
+already smooths its live per-token scores with a rolling mean over the same
+`window` (default 8) before comparing to tau. Train-time pooling now matches
+inference-time pooling.
 
 Usage:
     python src/extract.py --model qwen3-4b --pairs data/pairs.json --out data/acts.pt
@@ -31,11 +45,13 @@ from data_utils import load_pairs, get_texts_for_extraction
 import models as M
 
 
-def final_token_resid(model, text: str) -> torch.Tensor:
-    """Residual stream at the final token for every layer. Returns [n_layers, d_model].
+def windowed_resid(model, text: str, window: int = 8) -> torch.Tensor:
+    """Mean residual stream over the last `window` tokens, for every layer.
 
-    names_filter is not optional at scale: caching every hook point on a 4B model
-    will exhaust a T4. We only ever read resid_post.
+    Returns [n_layers, d_model].
+
+    names_filter is not optional at scale: caching every hook point on a 4B+
+    model will exhaust a T4. We only ever read resid_post.
     """
     with torch.no_grad():
         _, cache = model.run_with_cache(
@@ -44,7 +60,8 @@ def final_token_resid(model, text: str) -> torch.Tensor:
             return_type=None,
         )
     acts = torch.stack([
-        cache["resid_post", L][0, -1, :] for L in range(model.cfg.n_layers)
+        cache["resid_post", L][0, -window:, :].mean(dim=0)
+        for L in range(model.cfg.n_layers)
     ])
     del cache
     gc.collect()
@@ -53,7 +70,7 @@ def final_token_resid(model, text: str) -> torch.Tensor:
     return acts.float().cpu()
 
 
-def extract(model, pairs: list[dict], show_progress: bool = True):
+def extract(model, pairs: list[dict], window: int = 8, show_progress: bool = True):
     """Extract activations for all pairs.
 
     Returns (aligned [n,L,d], misaligned [n,L,d], pair_ids).
@@ -66,8 +83,8 @@ def extract(model, pairs: list[dict], show_progress: bool = True):
         it = tqdm(list(it), desc="extracting")
 
     for a_text, m_text in it:
-        A.append(final_token_resid(model, a_text))
-        Mis.append(final_token_resid(model, m_text))
+        A.append(windowed_resid(model, a_text, window=window))
+        Mis.append(windowed_resid(model, m_text, window=window))
 
     return torch.stack(A), torch.stack(Mis), pair_ids
 
@@ -79,6 +96,8 @@ def main():
     p.add_argument("--out", default="data/acts.pt")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", default="fp16", choices=["fp16", "bf16"])
+    p.add_argument("--window", type=int, default=8,
+                    help="mean-pool the last N reasoning tokens (matches monitor.py's smoothing window)")
     args = p.parse_args()
 
     torch.manual_seed(args.seed)
@@ -92,7 +111,7 @@ def main():
     model = M.load(args.model, dtype=args.dtype)
 
     t0 = time.time()
-    A, Mis, pair_ids = extract(model, pairs)
+    A, Mis, pair_ids = extract(model, pairs, window=args.window)
     elapsed = time.time() - t0
 
     assert A.shape == Mis.shape, f"shape mismatch: {A.shape} vs {Mis.shape}"
@@ -109,7 +128,8 @@ def main():
         "seed": args.seed,
         "dtype": args.dtype,
         "pairs_file": args.pairs,
-        "position": "final_token",
+        "position": f"last_{args.window}_mean",
+        "window": args.window,
         "hook": "resid_post",
         "elapsed_s": round(elapsed, 1),
     }

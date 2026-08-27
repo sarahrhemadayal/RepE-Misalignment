@@ -1,0 +1,7 @@
+# Large, fully regenerable from data/pairs.json + a model — do not track.
+data/acts.pt
+
+# Colab scratch
+temp.ipynb
+__pycache__/
+*.pyc
