@@ -239,7 +239,7 @@ def load(key: str, device: str = "cuda", dtype: str = "fp16"):
         from transformer_lens import HookedTransformer
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
-            model = HookedTransformer.from_pretrained(
+            model = HookedTransformer.from_pretrained_no_processing(
                 entry.hf_id, device=device, dtype=torch_dtype)
         api = "HookedTransformer (deprecated)"
 
