@@ -5,6 +5,7 @@ data/acts.pt
 temp.ipynb
 __pycache__/
 *.pyc
+notebooks/temp/
 
 # Miscellaneous
 guides/
