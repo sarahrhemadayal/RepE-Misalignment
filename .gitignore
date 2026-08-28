@@ -5,3 +5,6 @@ data/acts.pt
 temp.ipynb
 __pycache__/
 *.pyc
+
+# Miscellaneous
+guides/
